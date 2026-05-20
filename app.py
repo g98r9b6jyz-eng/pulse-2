@@ -21,6 +21,359 @@ roster_file = st.sidebar.file_uploader("Upload Prior Schedule (Roster)", type=['
 leave_file = st.sidebar.file_uploader("Upload Leave Requests", type=['xlsx'])
 
 # ==========================================
+# MODULE: A.R.M. (Automated Re-scheduling Module)
+# ==========================================
+st.divider()
+st.title("A.R.M. - Automated Re-scheduling Module")
+st.markdown("Upload your AMION schedule to automatically apply shift rules.")
+
+# Initialize ARM Session State
+if 'arm_providers' not in st.session_state:
+    st.session_state.arm_providers = [
+        {"name": "ADAM, G", "initials": "GA", "role": "MD"},
+        {"name": "ARCEDO, V", "initials": "VCA", "role": "MD"},
+        {"name": "BACASNOT, J", "initials": "JVB", "role": "MD"},
+        {"name": "BASTERRECHEA, H", "initials": "HRB", "role": "MD"},
+        {"name": "BOU, C", "initials": "CB", "role": "MD"},
+        {"name": "CABATU, A", "initials": "ACC", "role": "MD"},
+        {"name": "DE LEON, M", "initials": "MDT", "role": "MD"},
+        {"name": "DOMINGUEZ, G", "initials": "GJDP", "role": "MD"},
+        {"name": "DOTSON, T", "initials": "TMD", "role": "MD"},
+        {"name": "GONZALEZ-TORRES, J", "initials": "JGT", "role": "MD"},
+        {"name": "GRAZIANO, J", "initials": "JDG", "role": "MD"},
+        {"name": "JOHNSON, C", "initials": "CJ", "role": "MD"},
+        {"name": "MOHAR, C", "initials": "CMM", "role": "MD"},
+        {"name": "PAULIS, J", "initials": "JP", "role": "MD"},
+        {"name": "PEREZ, K", "initials": "KFP", "role": "MD"},
+        {"name": "POOLE, R", "initials": "RP", "role": "MD"},
+        {"name": "RUIZ-QUINONES, J", "initials": "JIR", "role": "MD"},
+        {"name": "SANDERS, B", "initials": "BS", "role": "MD"},
+        {"name": "SORGE, R", "initials": "RMS", "role": "MD"},
+        {"name": "SOSA, E", "initials": "ES", "role": "MD"},
+        {"name": "VIJAPURA, C", "initials": "CAV", "role": "MD"},
+        {"name": "ALEXANDER, B", "initials": "BRA", "role": "APP"},
+        {"name": "BENJAMIN, J", "initials": "JPB", "role": "APP"},
+        {"name": "BRINSON, T", "initials": "WTB", "role": "APP"},
+        {"name": "CALIFANO, J", "initials": "JNC", "role": "APP"},
+        {"name": "DECHON, B", "initials": "RLD", "role": "APP"},
+        {"name": "FREDERIQUE-BELL, P", "initials": "PFB", "role": "APP"},
+        {"name": "GRIMALDI, T", "initials": "TAG", "role": "APP"},
+        {"name": "PIERSON, K", "initials": "KRP", "role": "APP"}
+    ]
+if 'arm_step' not in st.session_state: st.session_state.arm_step = 'upload'
+if 'arm_missing_queue' not in st.session_state: st.session_state.arm_missing_queue = []
+if 'arm_raw_entries' not in st.session_state: st.session_state.arm_raw_entries = []
+if 'arm_parsed_dates' not in st.session_state: st.session_state.arm_parsed_dates = []
+
+def apply_arm_rules(shift_str, is_weekend, initial):
+    import re
+    if pd.isna(shift_str) or str(shift_str).strip() == "": return ""
+    match = re.search(r'(\d{1,2})([ap])m?\s*-\s*(\d{1,2})([ap])m?', str(shift_str), re.IGNORECASE)
+    if not match: return "" 
+    
+    sH, sM, eH, eM = int(match.group(1)), match.group(2).lower(), int(match.group(3)), match.group(4).lower()
+
+    if (sH == 7 or sH == 9) and sM == 'p':
+        return "8p-6a" if is_weekend else "8p-8a"
+
+    s24 = (12 if sM == 'p' else 0) if sH == 12 else sH + (12 if sM == 'p' else 0)
+    e24 = (12 if eM == 'p' else 0) if eH == 12 else eH + (12 if eM == 'p' else 0)
+    dur = e24 - s24 if e24 >= s24 else (e24 + 24) - s24
+
+    target_dur = dur
+    allowed_12hr = ["JNC", "JIR", "ACC", "VCA", "WTB", "MDT", "CJ", "RMS", "RP"]
+
+    if is_weekend and dur >= 12: target_dur = 10
+    elif not is_weekend and dur >= 12:
+        if str(initial).strip().upper() not in allowed_12hr: target_dur = 10
+
+    if target_dur != dur:
+        new_e24 = (s24 + target_dur) % 24
+        eH = new_e24 % 12 or 12
+        eM = 'p' if new_e24 >= 12 else 'a'
+
+    return f"{sH}{sM}-{eH}{eM}"
+
+# UI STEP 1: UPLOAD
+if st.session_state.arm_step == 'upload':
+    arm_file = st.file_uploader("Upload Schedule for A.R.M. (Excel)", type=['xlsx', 'xls', 'csv'], key="arm_upload")
+    if arm_file and st.button("Parse Schedule"):
+        df_arm = pd.read_excel(arm_file, header=None)
+        date_row_idx = -1
+        for idx, row in df_arm.head(10).iterrows():
+            if sum(pd.to_datetime(row[1:], errors='coerce').notna()) >= 3:
+                date_row_idx = idx
+                break
+                
+        if date_row_idx != -1:
+            date_row = df_arm.iloc[date_row_idx]
+            all_dates = pd.to_datetime(date_row[1:], errors='coerce')
+            
+            # SLICE LAST 15 COLUMNS ONLY
+            valid_date_cols = all_dates.dropna().index[-15:]
+            st.session_state.arm_parsed_dates = all_dates[valid_date_cols]
+            
+            raw_entries = []
+            unique_initials = set()
+            known_initials = [p['initials'].upper() for p in st.session_state.arm_providers]
+            
+            for idx in range(date_row_idx + 1, len(df_arm)):
+                row = df_arm.iloc[idx]
+                shift_str = str(row[0]).strip()
+                if not shift_str or shift_str == "nan": continue
+                
+                # Iterate only through the last 15 valid columns
+                for c_idx, date_val in st.session_state.arm_parsed_dates.items():
+                    cell_val = str(row[c_idx]).strip()
+                    if cell_val and cell_val != "nan":
+                        initials_list = [v.strip().upper() for v in cell_val.split(',') if v.strip()]
+                        for init in initials_list:
+                            if init.isalpha():
+                                unique_initials.add(init)
+                                raw_entries.append({
+                                    'initial': init, 'col_idx': c_idx, 'date': date_val,
+                                    'raw_shift': shift_str, 'is_weekend': date_val.weekday() >= 5
+                                })
+                                
+            st.session_state.arm_raw_entries = raw_entries
+            st.session_state.arm_missing_queue = [init for init in unique_initials if init not in known_initials]
+            st.session_state.arm_step = 'resolve' if st.session_state.arm_missing_queue else 'generate'
+            st.rerun()
+        else:
+            st.error("Could not locate date header row.")
+
+# UI STEP 2: RESOLVE UNKNOWN PROVIDERS
+elif st.session_state.arm_step == 'resolve':
+    current_init = st.session_state.arm_missing_queue[0]
+    st.warning(f"⚠️ **New Initials Detected:** `{current_init}`")
+    st.info("These initials were found in the schedule but are not in the database.")
+    
+    with st.form("arm_resolve_form"):
+        new_name = st.text_input("Name (Last, First Initial)", placeholder="e.g. SMITH, J")
+        new_role = st.selectbox("Role", ["MD", "APP"])
+        
+        col1, col2 = st.columns(2)
+        save_btn = col1.form_submit_button("Save Provider", type="primary")
+        skip_btn = col2.form_submit_button("Skip Provider")
+        
+        if save_btn:
+            if new_name:
+                st.session_state.arm_providers.append({"name": new_name.upper(), "initials": current_init, "role": new_role})
+                st.session_state.arm_missing_queue.pop(0)
+                if not st.session_state.arm_missing_queue:
+                    st.session_state.arm_step = 'generate'
+                st.rerun()
+            else:
+                st.error("Name is required to save.")
+        elif skip_btn:
+            st.session_state.arm_raw_entries = [e for e in st.session_state.arm_raw_entries if e['initial'] != current_init]
+            st.session_state.arm_missing_queue.pop(0)
+            if not st.session_state.arm_missing_queue:
+                st.session_state.arm_step = 'generate'
+            st.rerun()
+
+# UI STEP 3: GENERATE
+elif st.session_state.arm_step == 'generate':
+    st.success("Schedule processed and ready for export.")
+    
+    # Add Provider Manually Expander
+    with st.expander("➕ Add Provider Manually (If Missing)"):
+        with st.form("manual_add_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1: m_name = st.text_input("Name (Last, F)")
+            with col2: m_init = st.text_input("Initials").upper()
+            with col3: m_role = st.selectbox("Role", ["MD", "APP"])
+            if st.form_submit_button("Add to Schedule"):
+                if m_name and m_init:
+                    st.session_state.arm_providers.append({"name": m_name.upper(), "initials": m_init, "role": m_role})
+                    st.rerun()
+                else:
+                    st.error("Name and Initials are required.")
+
+    # Initialize output structure
+    output_dict = {}
+    for p in st.session_state.arm_providers:
+        output_dict[p['initials']] = {
+            'Provider': p['name'], 'Initials': p['initials'], 'Role': p['role']
+        }
+        for d in st.session_state.arm_parsed_dates.dropna():
+            output_dict[p['initials']][d.strftime('%a %m/%d')] = ""
+
+    # Map shifts
+    for entry in st.session_state.arm_raw_entries:
+        init = entry['initial']
+        if init in output_dict:
+            clean_shift = apply_arm_rules(entry['raw_shift'], entry['is_weekend'], init)
+            if clean_shift:
+                date_key = entry['date'].strftime('%a %m/%d')
+                existing = output_dict[init][date_key]
+                output_dict[init][date_key] = f"{existing}, {clean_shift}" if existing else clean_shift
+
+    df_out = pd.DataFrame(list(output_dict.values()))
+    
+    # Sort: MD first, then APP, then alphabetical by name
+    df_out['Role_Sort'] = df_out['Role'].apply(lambda x: 0 if x == 'MD' else 1)
+    df_out = df_out.sort_values(['Role_Sort', 'Provider']).drop('Role_Sort', axis=1)
+
+    st.dataframe(df_out)
+    
+    out_buffer = io.BytesIO()
+    df_out.to_excel(out_buffer, index=False, sheet_name="Processed Schedule")
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.download_button("Export Excel", data=out_buffer.getvalue(), file_name="ARM_Processed.xlsx", mime="application/vnd.ms-excel")
+    with col2:
+        if st.button("Start Over"):
+            st.session_state.arm_step = 'upload'
+            st.rerun()
+
+# ==========================================
+# MODULE: PLANS (Pay-period Leave Allocation)
+# ==========================================
+st.divider()
+st.title("PLANS - Leave Allocation Tracker")
+st.markdown("Upload your AMION roster to extract and calculate leave blocks.")
+
+if 'plans_initials' not in st.session_state:
+    st.session_state.plans_initials = {
+        "ADAM, G": "GA", "ARCEDO, V": "VCA", "BACASNOT, J": "JVB", "BASTERRECHEA, H": "HRB",
+        "BOU, C": "CB", "CABATU, A": "ACC", "DE LEON, M": "MDT", "DOMINGUEZ, G": "GJDP",
+        "DOTSON, T": "TMD", "GONZALEZ-TORRES, J": "JGT", "GRAZIANO, J": "JDG", "JOHNSON, C": "CJ",
+        "MOHAR, C": "CMM", "PAULIS, J": "JP", "PEREZ, K": "KFP", "POOLE, R": "RP",
+        "RUIZ-QUINONES, J": "JIR", "SANDERS, B": "BS", "SORGE, R": "RMS", "SOSA, E": "ES",
+        "VIJAPURA, C": "CAV", "ALEXANDER, B": "BRA", "BENJAMIN, J": "JPB", "BRINSON, T": "WTB",
+        "CALIFANO, J": "JNC", "DECHON, B": "RLD", "FREDERIQUE-BELL, P": "PFB", "GRIMALDI, T": "TAG",
+        "PIERSON, K": "KRP"
+    }
+if 'plans_step' not in st.session_state: st.session_state.plans_step = 'upload'
+if 'plans_unknowns' not in st.session_state: st.session_state.plans_unknowns = []
+if 'plans_df' not in st.session_state: st.session_state.plans_df = None
+if 'plans_dates' not in st.session_state: st.session_state.plans_dates = None
+
+# UI STEP 1: UPLOAD
+if st.session_state.plans_step == 'upload':
+    plans_file = st.file_uploader("Upload Roster for PLANS (Excel)", type=['xlsx', 'xls', 'csv'], key="plans_upload")
+    if plans_file and st.button("Parse Roster"):
+        df_plans = pd.read_excel(plans_file, header=None)
+        date_row_idx = -1
+        for idx, row in df_plans.head(10).iterrows():
+            if sum(pd.to_datetime(row[1:], errors='coerce').notna()) >= 3:
+                date_row_idx = idx
+                break
+
+        if date_row_idx != -1:
+            st.session_state.plans_dates = pd.to_datetime(df_plans.iloc[date_row_idx][1:], errors='coerce')
+            st.session_state.plans_df = df_plans.iloc[date_row_idx + 1:]
+            
+            # Find unknowns
+            unknowns = []
+            for idx, row in st.session_state.plans_df.iterrows():
+                name = str(row[0]).replace('"', '').replace("'", "").strip()
+                if name and name != "nan" and name not in st.session_state.plans_initials:
+                    if name not in unknowns: unknowns.append(name)
+            
+            st.session_state.plans_unknowns = unknowns
+            st.session_state.plans_step = 'resolve' if unknowns else 'generate'
+            st.rerun()
+        else:
+            st.error("Could not locate date header row.")
+
+# UI STEP 2: RESOLVE UNKNOWNS
+elif st.session_state.plans_step == 'resolve':
+    st.warning(f"⚠️ **Found {len(st.session_state.plans_unknowns)} new provider(s)**.")
+    st.info("Assign their initials below, or check 'Ignore' to skip their records entirely.")
+    
+    with st.form("plans_resolve_form"):
+        mappings = {}
+        for name in st.session_state.plans_unknowns:
+            col1, col2, col3 = st.columns([3, 1, 2])
+            with col1:
+                st.markdown(f"**{name}**")
+            with col2:
+                ignore = st.checkbox("Ignore", key=f"ign_{name}")
+            with col3:
+                init = st.text_input("Initials", key=f"init_{name}", disabled=ignore, label_visibility="collapsed", placeholder="Initials")
+            
+            mappings[name] = {"ignore": ignore, "initials": init}
+            
+        if st.form_submit_button("Save & Process", type="primary"):
+            for name, data in mappings.items():
+                if data["ignore"]:
+                    st.session_state.plans_initials[name] = "IGNORE"
+                else:
+                    val_clean = data["initials"].strip().upper()
+                    if val_clean: st.session_state.plans_initials[name] = val_clean
+            st.session_state.plans_step = 'generate'
+            st.rerun()
+
+# UI STEP 3: GENERATE
+elif st.session_state.plans_step == 'generate':
+    special_providers = ['JNC', 'JIR', 'ACC', 'VCA', 'WTB', 'MDT', 'CJ', 'RMS', 'RP']
+    leave_records = []
+    
+    for idx, row in st.session_state.plans_df.iterrows():
+        raw_name = str(row[0]).replace('"', '').replace("'", "").strip()
+        if not raw_name or raw_name == "nan": continue
+        
+        initials = st.session_state.plans_initials.get(raw_name)
+        if not initials or initials == "IGNORE": continue
+        
+        provider_leaves = []
+        for c_idx, date_val in st.session_state.plans_dates.items():
+            if pd.notna(date_val):
+                val = str(row[c_idx]).strip().upper()
+                if val in ['VAC', 'ADM', 'SICK', 'X', 'HOLIDAY']:
+                    provider_leaves.append({'date': date_val, 'type': val})
+        
+        if not provider_leaves: continue
+        provider_leaves.sort(key=lambda x: x['date'])
+        
+        paid_leave_count = 0
+        for d in provider_leaves:
+            if d['type'] in ['VAC', 'ADM', 'SICK']:
+                paid_leave_count += 1
+                d['hours'] = (10 if paid_leave_count <= 2 else 12) if initials in special_providers else 10
+            elif d['type'] in ['X', 'HOLIDAY']:
+                d['hours'] = 0
+
+        # Group contiguous blocks
+        current_block = [provider_leaves[0]]
+        for i in range(1, len(provider_leaves)):
+            if (provider_leaves[i]['date'] - current_block[-1]['date']).days == 1:
+                current_block.append(provider_leaves[i])
+            else:
+                leave_records.append({
+                    'Initials': initials,
+                    'Start_Date': current_block[0]['date'].strftime('%m/%d/%Y'),
+                    'End_Date': current_block[-1]['date'].strftime('%m/%d/%Y'),
+                    'Leave_Hours': sum(item['hours'] for item in current_block)
+                })
+                current_block = [provider_leaves[i]]
+        
+        leave_records.append({
+            'Initials': initials,
+            'Start_Date': current_block[0]['date'].strftime('%m/%d/%Y'),
+            'End_Date': current_block[-1]['date'].strftime('%m/%d/%Y'),
+            'Leave_Hours': sum(item['hours'] for item in current_block)
+        })
+
+    df_out_plans = pd.DataFrame(leave_records)
+    st.success(f"Successfully processed {len(leave_records)} leave blocks!")
+    st.dataframe(df_out_plans)
+    
+    out_buffer_plans = io.BytesIO()
+    df_out_plans.to_excel(out_buffer_plans, index=False, sheet_name="Leave_Data")
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.download_button("Export Excel", data=out_buffer_plans.getvalue(), file_name="PLANS_EXPORT.xlsx", mime="application/vnd.ms-excel")
+    with col2:
+        if st.button("Start Over", key="plans_reset"):
+            st.session_state.plans_step = 'upload'
+            st.rerun()
+            
+# ==========================================
 # ENGINE BLOCKS
 # ==========================================
 def run_block_1(uploaded_roster):
@@ -639,355 +992,4 @@ if st.button("Generate Pulse Schedule", type="primary"):
             else:
                 st.error("Engine Status: INFEASIBLE. The rules contradict each other; no schedule is mathematically possible.")
 
-# ==========================================
-# MODULE: A.R.M. (Automated Re-scheduling Module)
-# ==========================================
-st.divider()
-st.title("A.R.M. - Automated Re-scheduling Module")
-st.markdown("Upload your AMION schedule to automatically apply shift rules.")
 
-# Initialize ARM Session State
-if 'arm_providers' not in st.session_state:
-    st.session_state.arm_providers = [
-        {"name": "ADAM, G", "initials": "GA", "role": "MD"},
-        {"name": "ARCEDO, V", "initials": "VCA", "role": "MD"},
-        {"name": "BACASNOT, J", "initials": "JVB", "role": "MD"},
-        {"name": "BASTERRECHEA, H", "initials": "HRB", "role": "MD"},
-        {"name": "BOU, C", "initials": "CB", "role": "MD"},
-        {"name": "CABATU, A", "initials": "ACC", "role": "MD"},
-        {"name": "DE LEON, M", "initials": "MDT", "role": "MD"},
-        {"name": "DOMINGUEZ, G", "initials": "GJDP", "role": "MD"},
-        {"name": "DOTSON, T", "initials": "TMD", "role": "MD"},
-        {"name": "GONZALEZ-TORRES, J", "initials": "JGT", "role": "MD"},
-        {"name": "GRAZIANO, J", "initials": "JDG", "role": "MD"},
-        {"name": "JOHNSON, C", "initials": "CJ", "role": "MD"},
-        {"name": "MOHAR, C", "initials": "CMM", "role": "MD"},
-        {"name": "PAULIS, J", "initials": "JP", "role": "MD"},
-        {"name": "PEREZ, K", "initials": "KFP", "role": "MD"},
-        {"name": "POOLE, R", "initials": "RP", "role": "MD"},
-        {"name": "RUIZ-QUINONES, J", "initials": "JIR", "role": "MD"},
-        {"name": "SANDERS, B", "initials": "BS", "role": "MD"},
-        {"name": "SORGE, R", "initials": "RMS", "role": "MD"},
-        {"name": "SOSA, E", "initials": "ES", "role": "MD"},
-        {"name": "VIJAPURA, C", "initials": "CAV", "role": "MD"},
-        {"name": "ALEXANDER, B", "initials": "BRA", "role": "APP"},
-        {"name": "BENJAMIN, J", "initials": "JPB", "role": "APP"},
-        {"name": "BRINSON, T", "initials": "WTB", "role": "APP"},
-        {"name": "CALIFANO, J", "initials": "JNC", "role": "APP"},
-        {"name": "DECHON, B", "initials": "RLD", "role": "APP"},
-        {"name": "FREDERIQUE-BELL, P", "initials": "PFB", "role": "APP"},
-        {"name": "GRIMALDI, T", "initials": "TAG", "role": "APP"},
-        {"name": "PIERSON, K", "initials": "KRP", "role": "APP"}
-    ]
-if 'arm_step' not in st.session_state: st.session_state.arm_step = 'upload'
-if 'arm_missing_queue' not in st.session_state: st.session_state.arm_missing_queue = []
-if 'arm_raw_entries' not in st.session_state: st.session_state.arm_raw_entries = []
-if 'arm_parsed_dates' not in st.session_state: st.session_state.arm_parsed_dates = []
-
-def apply_arm_rules(shift_str, is_weekend, initial):
-    import re
-    if pd.isna(shift_str) or str(shift_str).strip() == "": return ""
-    match = re.search(r'(\d{1,2})([ap])m?\s*-\s*(\d{1,2})([ap])m?', str(shift_str), re.IGNORECASE)
-    if not match: return "" 
-    
-    sH, sM, eH, eM = int(match.group(1)), match.group(2).lower(), int(match.group(3)), match.group(4).lower()
-
-    if (sH == 7 or sH == 9) and sM == 'p':
-        return "8p-6a" if is_weekend else "8p-8a"
-
-    s24 = (12 if sM == 'p' else 0) if sH == 12 else sH + (12 if sM == 'p' else 0)
-    e24 = (12 if eM == 'p' else 0) if eH == 12 else eH + (12 if eM == 'p' else 0)
-    dur = e24 - s24 if e24 >= s24 else (e24 + 24) - s24
-
-    target_dur = dur
-    allowed_12hr = ["JNC", "JIR", "ACC", "VCA", "WTB", "MDT", "CJ", "RMS", "RP"]
-
-    if is_weekend and dur >= 12: target_dur = 10
-    elif not is_weekend and dur >= 12:
-        if str(initial).strip().upper() not in allowed_12hr: target_dur = 10
-
-    if target_dur != dur:
-        new_e24 = (s24 + target_dur) % 24
-        eH = new_e24 % 12 or 12
-        eM = 'p' if new_e24 >= 12 else 'a'
-
-    return f"{sH}{sM}-{eH}{eM}"
-
-# UI STEP 1: UPLOAD
-if st.session_state.arm_step == 'upload':
-    arm_file = st.file_uploader("Upload Schedule for A.R.M. (Excel)", type=['xlsx', 'xls', 'csv'], key="arm_upload")
-    if arm_file and st.button("Parse Schedule"):
-        df_arm = pd.read_excel(arm_file, header=None)
-        date_row_idx = -1
-        for idx, row in df_arm.head(10).iterrows():
-            if sum(pd.to_datetime(row[1:], errors='coerce').notna()) >= 3:
-                date_row_idx = idx
-                break
-                
-        if date_row_idx != -1:
-            date_row = df_arm.iloc[date_row_idx]
-            all_dates = pd.to_datetime(date_row[1:], errors='coerce')
-            
-            # SLICE LAST 15 COLUMNS ONLY
-            valid_date_cols = all_dates.dropna().index[-15:]
-            st.session_state.arm_parsed_dates = all_dates[valid_date_cols]
-            
-            raw_entries = []
-            unique_initials = set()
-            known_initials = [p['initials'].upper() for p in st.session_state.arm_providers]
-            
-            for idx in range(date_row_idx + 1, len(df_arm)):
-                row = df_arm.iloc[idx]
-                shift_str = str(row[0]).strip()
-                if not shift_str or shift_str == "nan": continue
-                
-                # Iterate only through the last 15 valid columns
-                for c_idx, date_val in st.session_state.arm_parsed_dates.items():
-                    cell_val = str(row[c_idx]).strip()
-                    if cell_val and cell_val != "nan":
-                        initials_list = [v.strip().upper() for v in cell_val.split(',') if v.strip()]
-                        for init in initials_list:
-                            if init.isalpha():
-                                unique_initials.add(init)
-                                raw_entries.append({
-                                    'initial': init, 'col_idx': c_idx, 'date': date_val,
-                                    'raw_shift': shift_str, 'is_weekend': date_val.weekday() >= 5
-                                })
-                                
-            st.session_state.arm_raw_entries = raw_entries
-            st.session_state.arm_missing_queue = [init for init in unique_initials if init not in known_initials]
-            st.session_state.arm_step = 'resolve' if st.session_state.arm_missing_queue else 'generate'
-            st.rerun()
-        else:
-            st.error("Could not locate date header row.")
-
-# UI STEP 2: RESOLVE UNKNOWN PROVIDERS
-elif st.session_state.arm_step == 'resolve':
-    current_init = st.session_state.arm_missing_queue[0]
-    st.warning(f"⚠️ **New Initials Detected:** `{current_init}`")
-    st.info("These initials were found in the schedule but are not in the database.")
-    
-    with st.form("arm_resolve_form"):
-        new_name = st.text_input("Name (Last, First Initial)", placeholder="e.g. SMITH, J")
-        new_role = st.selectbox("Role", ["MD", "APP"])
-        
-        col1, col2 = st.columns(2)
-        save_btn = col1.form_submit_button("Save Provider", type="primary")
-        skip_btn = col2.form_submit_button("Skip Provider")
-        
-        if save_btn:
-            if new_name:
-                st.session_state.arm_providers.append({"name": new_name.upper(), "initials": current_init, "role": new_role})
-                st.session_state.arm_missing_queue.pop(0)
-                if not st.session_state.arm_missing_queue:
-                    st.session_state.arm_step = 'generate'
-                st.rerun()
-            else:
-                st.error("Name is required to save.")
-        elif skip_btn:
-            st.session_state.arm_raw_entries = [e for e in st.session_state.arm_raw_entries if e['initial'] != current_init]
-            st.session_state.arm_missing_queue.pop(0)
-            if not st.session_state.arm_missing_queue:
-                st.session_state.arm_step = 'generate'
-            st.rerun()
-
-# UI STEP 3: GENERATE
-elif st.session_state.arm_step == 'generate':
-    st.success("Schedule processed and ready for export.")
-    
-    # Add Provider Manually Expander
-    with st.expander("➕ Add Provider Manually (If Missing)"):
-        with st.form("manual_add_form"):
-            col1, col2, col3 = st.columns(3)
-            with col1: m_name = st.text_input("Name (Last, F)")
-            with col2: m_init = st.text_input("Initials").upper()
-            with col3: m_role = st.selectbox("Role", ["MD", "APP"])
-            if st.form_submit_button("Add to Schedule"):
-                if m_name and m_init:
-                    st.session_state.arm_providers.append({"name": m_name.upper(), "initials": m_init, "role": m_role})
-                    st.rerun()
-                else:
-                    st.error("Name and Initials are required.")
-
-    # Initialize output structure
-    output_dict = {}
-    for p in st.session_state.arm_providers:
-        output_dict[p['initials']] = {
-            'Provider': p['name'], 'Initials': p['initials'], 'Role': p['role']
-        }
-        for d in st.session_state.arm_parsed_dates.dropna():
-            output_dict[p['initials']][d.strftime('%a %m/%d')] = ""
-
-    # Map shifts
-    for entry in st.session_state.arm_raw_entries:
-        init = entry['initial']
-        if init in output_dict:
-            clean_shift = apply_arm_rules(entry['raw_shift'], entry['is_weekend'], init)
-            if clean_shift:
-                date_key = entry['date'].strftime('%a %m/%d')
-                existing = output_dict[init][date_key]
-                output_dict[init][date_key] = f"{existing}, {clean_shift}" if existing else clean_shift
-
-    df_out = pd.DataFrame(list(output_dict.values()))
-    
-    # Sort: MD first, then APP, then alphabetical by name
-    df_out['Role_Sort'] = df_out['Role'].apply(lambda x: 0 if x == 'MD' else 1)
-    df_out = df_out.sort_values(['Role_Sort', 'Provider']).drop('Role_Sort', axis=1)
-
-    st.dataframe(df_out)
-    
-    out_buffer = io.BytesIO()
-    df_out.to_excel(out_buffer, index=False, sheet_name="Processed Schedule")
-    
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.download_button("Export Excel", data=out_buffer.getvalue(), file_name="ARM_Processed.xlsx", mime="application/vnd.ms-excel")
-    with col2:
-        if st.button("Start Over"):
-            st.session_state.arm_step = 'upload'
-            st.rerun()
-
-# ==========================================
-# MODULE: PLANS (Pay-period Leave Allocation)
-# ==========================================
-st.divider()
-st.title("PLANS - Leave Allocation Tracker")
-st.markdown("Upload your AMION roster to extract and calculate leave blocks.")
-
-if 'plans_initials' not in st.session_state:
-    st.session_state.plans_initials = {
-        "ADAM, G": "GA", "ARCEDO, V": "VCA", "BACASNOT, J": "JVB", "BASTERRECHEA, H": "HRB",
-        "BOU, C": "CB", "CABATU, A": "ACC", "DE LEON, M": "MDT", "DOMINGUEZ, G": "GJDP",
-        "DOTSON, T": "TMD", "GONZALEZ-TORRES, J": "JGT", "GRAZIANO, J": "JDG", "JOHNSON, C": "CJ",
-        "MOHAR, C": "CMM", "PAULIS, J": "JP", "PEREZ, K": "KFP", "POOLE, R": "RP",
-        "RUIZ-QUINONES, J": "JIR", "SANDERS, B": "BS", "SORGE, R": "RMS", "SOSA, E": "ES",
-        "VIJAPURA, C": "CAV", "ALEXANDER, B": "BRA", "BENJAMIN, J": "JPB", "BRINSON, T": "WTB",
-        "CALIFANO, J": "JNC", "DECHON, B": "RLD", "FREDERIQUE-BELL, P": "PFB", "GRIMALDI, T": "TAG",
-        "PIERSON, K": "KRP"
-    }
-if 'plans_step' not in st.session_state: st.session_state.plans_step = 'upload'
-if 'plans_unknowns' not in st.session_state: st.session_state.plans_unknowns = []
-if 'plans_df' not in st.session_state: st.session_state.plans_df = None
-if 'plans_dates' not in st.session_state: st.session_state.plans_dates = None
-
-# UI STEP 1: UPLOAD
-if st.session_state.plans_step == 'upload':
-    plans_file = st.file_uploader("Upload Roster for PLANS (Excel)", type=['xlsx', 'xls', 'csv'], key="plans_upload")
-    if plans_file and st.button("Parse Roster"):
-        df_plans = pd.read_excel(plans_file, header=None)
-        date_row_idx = -1
-        for idx, row in df_plans.head(10).iterrows():
-            if sum(pd.to_datetime(row[1:], errors='coerce').notna()) >= 3:
-                date_row_idx = idx
-                break
-
-        if date_row_idx != -1:
-            st.session_state.plans_dates = pd.to_datetime(df_plans.iloc[date_row_idx][1:], errors='coerce')
-            st.session_state.plans_df = df_plans.iloc[date_row_idx + 1:]
-            
-            # Find unknowns
-            unknowns = []
-            for idx, row in st.session_state.plans_df.iterrows():
-                name = str(row[0]).replace('"', '').replace("'", "").strip()
-                if name and name != "nan" and name not in st.session_state.plans_initials:
-                    if name not in unknowns: unknowns.append(name)
-            
-            st.session_state.plans_unknowns = unknowns
-            st.session_state.plans_step = 'resolve' if unknowns else 'generate'
-            st.rerun()
-        else:
-            st.error("Could not locate date header row.")
-
-# UI STEP 2: RESOLVE UNKNOWNS
-elif st.session_state.plans_step == 'resolve':
-    st.warning(f"⚠️ **Found {len(st.session_state.plans_unknowns)} new provider(s)**.")
-    st.info("Assign their initials below, or check 'Ignore' to skip their records entirely.")
-    
-    with st.form("plans_resolve_form"):
-        mappings = {}
-        for name in st.session_state.plans_unknowns:
-            col1, col2, col3 = st.columns([3, 1, 2])
-            with col1:
-                st.markdown(f"**{name}**")
-            with col2:
-                ignore = st.checkbox("Ignore", key=f"ign_{name}")
-            with col3:
-                init = st.text_input("Initials", key=f"init_{name}", disabled=ignore, label_visibility="collapsed", placeholder="Initials")
-            
-            mappings[name] = {"ignore": ignore, "initials": init}
-            
-        if st.form_submit_button("Save & Process", type="primary"):
-            for name, data in mappings.items():
-                if data["ignore"]:
-                    st.session_state.plans_initials[name] = "IGNORE"
-                else:
-                    val_clean = data["initials"].strip().upper()
-                    if val_clean: st.session_state.plans_initials[name] = val_clean
-            st.session_state.plans_step = 'generate'
-            st.rerun()
-
-# UI STEP 3: GENERATE
-elif st.session_state.plans_step == 'generate':
-    special_providers = ['JNC', 'JIR', 'ACC', 'VCA', 'WTB', 'MDT', 'CJ', 'RMS', 'RP']
-    leave_records = []
-    
-    for idx, row in st.session_state.plans_df.iterrows():
-        raw_name = str(row[0]).replace('"', '').replace("'", "").strip()
-        if not raw_name or raw_name == "nan": continue
-        
-        initials = st.session_state.plans_initials.get(raw_name)
-        if not initials or initials == "IGNORE": continue
-        
-        provider_leaves = []
-        for c_idx, date_val in st.session_state.plans_dates.items():
-            if pd.notna(date_val):
-                val = str(row[c_idx]).strip().upper()
-                if val in ['VAC', 'ADM', 'SICK', 'X', 'HOLIDAY']:
-                    provider_leaves.append({'date': date_val, 'type': val})
-        
-        if not provider_leaves: continue
-        provider_leaves.sort(key=lambda x: x['date'])
-        
-        paid_leave_count = 0
-        for d in provider_leaves:
-            if d['type'] in ['VAC', 'ADM', 'SICK']:
-                paid_leave_count += 1
-                d['hours'] = (10 if paid_leave_count <= 2 else 12) if initials in special_providers else 10
-            elif d['type'] in ['X', 'HOLIDAY']:
-                d['hours'] = 0
-
-        # Group contiguous blocks
-        current_block = [provider_leaves[0]]
-        for i in range(1, len(provider_leaves)):
-            if (provider_leaves[i]['date'] - current_block[-1]['date']).days == 1:
-                current_block.append(provider_leaves[i])
-            else:
-                leave_records.append({
-                    'Initials': initials,
-                    'Start_Date': current_block[0]['date'].strftime('%m/%d/%Y'),
-                    'End_Date': current_block[-1]['date'].strftime('%m/%d/%Y'),
-                    'Leave_Hours': sum(item['hours'] for item in current_block)
-                })
-                current_block = [provider_leaves[i]]
-        
-        leave_records.append({
-            'Initials': initials,
-            'Start_Date': current_block[0]['date'].strftime('%m/%d/%Y'),
-            'End_Date': current_block[-1]['date'].strftime('%m/%d/%Y'),
-            'Leave_Hours': sum(item['hours'] for item in current_block)
-        })
-
-    df_out_plans = pd.DataFrame(leave_records)
-    st.success(f"Successfully processed {len(leave_records)} leave blocks!")
-    st.dataframe(df_out_plans)
-    
-    out_buffer_plans = io.BytesIO()
-    df_out_plans.to_excel(out_buffer_plans, index=False, sheet_name="Leave_Data")
-    
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.download_button("Export Excel", data=out_buffer_plans.getvalue(), file_name="PLANS_EXPORT.xlsx", mime="application/vnd.ms-excel")
-    with col2:
-        if st.button("Start Over", key="plans_reset"):
-            st.session_state.plans_step = 'upload'
-            st.rerun()
