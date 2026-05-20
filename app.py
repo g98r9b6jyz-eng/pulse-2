@@ -395,8 +395,8 @@ with st.container(border=True):
     
     with col2:
         st.subheader("2. File Uploads")
-        roster_file = st.file_uploader("Upload Prior Schedule (Roster / ARM Output)", type=['xlsx'])
-        leave_file = st.file_uploader("Upload Leave Requests (PLANS Output)", type=['xlsx'])
+        roster_file = st.file_uploader("Upload Prior Schedule (Schedule / ARM Output)", type=['xlsx'])
+        leave_file = st.file_uploader("Upload Leave Requests (Leave / PLANS Output)", type=['xlsx'])
 
     # ==========================================
     # ENGINE BLOCKS
