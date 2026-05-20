@@ -17,8 +17,8 @@ st.markdown("---")
 
 st.info("""
 ### 📋 Scheduling Workflow
-1. **Step 1 (A.R.M.):** Upload your AMION schedule to format and apply shift rules. Download the processed schedule.
-2. **Step 2 (PLANS):** Upload the AMION roster to extract and calculate leave blocks. Download the processed leave data.
+1. **Step 1 (A.R.M.):** Open your schedule in OnCall, go to Edit on the top menu bar, and select Copy table text. Open Microsoft Excel, click the top-left cell, and press Paste. Upload that AMION schedule here to format and apply shift rules. Download the processed schedule.
+2. **Step 2 (P.L.A.N.S.):** Open your schedule in the Amion OnCall desktop app. Go to the menu bar, click Edit, and select Copy table text. Open a blank Excel workbook and choose Paste. Upload the AMION leave requests here to format it. Download the processed leave data.
 3. **Step 3 (P.U.L.S.E.):** Upload the output files from Step 1 and Step 2 into the P.U.L.S.E. engine to generate the optimal schedule.
 """)
 
@@ -226,7 +226,7 @@ with st.container(border=True):
         
         col1, col2 = st.columns([1, 4])
         with col1:
-            st.download_button("Export Excel", data=out_buffer.getvalue(), file_name="ARM_Processed.xlsx", mime="application/vnd.ms-excel")
+            st.download_button("Export Excel", data=out_buffer.getvalue(), file_name="ARM_Schedule_${formattedDate}.xlsx", mime="application/vnd.ms-excel")
         with col2:
             if st.button("Start Over"):
                 st.session_state.arm_step = 'upload'
@@ -239,7 +239,7 @@ st.write("") # Spacer
 # ==========================================
 with st.container(border=True):
     st.markdown("<h2 style='color: #059669;'>Step 2: PLANS (Pay-period Leave Allocation)</h2>", unsafe_allow_html=True)
-    st.markdown("Upload your AMION roster to extract and calculate leave blocks.")
+    st.markdown("Upload your AMION leave requests to extract and calculate leave blocks.")
 
     if 'plans_initials' not in st.session_state:
         st.session_state.plans_initials = {
@@ -373,7 +373,7 @@ with st.container(border=True):
         
         col1, col2 = st.columns([1, 4])
         with col1:
-            st.download_button("Export Excel", data=out_buffer_plans.getvalue(), file_name="PLANS_EXPORT.xlsx", mime="application/vnd.ms-excel")
+            st.download_button("Export Excel", data=out_buffer_plans.getvalue(), file_name="PLANS_leave_${formattedDate}.xlsx", mime="application/vnd.ms-excel")
         with col2:
             if st.button("Start Over", key="plans_reset"):
                 st.session_state.plans_step = 'upload'
