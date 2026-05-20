@@ -238,7 +238,7 @@ st.write("") # Spacer
 # MODULE 2: PLANS (Pay-period Leave Allocation)
 # ==========================================
 with st.container(border=True):
-    st.markdown("<h2 style='color: #059669;'>Step 2: PLANS (Pay-period Leave Allocation)</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color: #059669;'>Step 2: P.L.A.N.S. (Pay-period Leave Allocation)</h2>", unsafe_allow_html=True)
     st.markdown("Upload your AMION leave requests to extract and calculate leave blocks.")
 
     if 'plans_initials' not in st.session_state:
