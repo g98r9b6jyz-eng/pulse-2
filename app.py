@@ -7,8 +7,8 @@ from openpyxl.styles import PatternFill, Border, Side, Font, Alignment
 from openpyxl.utils import get_column_letter
 import io
 
-st.set_page_config(page_title="PULSE AI Scheduler", layout="wide")
-st.title("PULSE AI Scheduling Engine")
+st.set_page_config(page_title="Provider Utilization and Logistics Scheduling Engine", layout="wide")
+st.title("Provider Utilization and Logistics Scheduling Engine")
 
 # ==========================================
 # UI: DATA INPUTS
@@ -372,7 +372,10 @@ elif st.session_state.plans_step == 'generate':
         if st.button("Start Over", key="plans_reset"):
             st.session_state.plans_step = 'upload'
             st.rerun()
-            
+
+st.divider()
+st.title("P.U.L.S.E.")
+
 # ==========================================
 # ENGINE BLOCKS
 # ==========================================
