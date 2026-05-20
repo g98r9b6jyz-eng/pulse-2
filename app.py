@@ -726,7 +726,11 @@ if st.session_state.arm_step == 'upload':
                 
         if date_row_idx != -1:
             date_row = df_arm.iloc[date_row_idx]
-            st.session_state.arm_parsed_dates = pd.to_datetime(date_row[1:], errors='coerce')
+            all_dates = pd.to_datetime(date_row[1:], errors='coerce')
+            
+            # SLICE LAST 15 COLUMNS ONLY
+            valid_date_cols = all_dates.dropna().index[-15:]
+            st.session_state.arm_parsed_dates = all_dates[valid_date_cols]
             
             raw_entries = []
             unique_initials = set()
@@ -737,6 +741,7 @@ if st.session_state.arm_step == 'upload':
                 shift_str = str(row[0]).strip()
                 if not shift_str or shift_str == "nan": continue
                 
+                # Iterate only through the last 15 valid columns
                 for c_idx, date_val in st.session_state.arm_parsed_dates.items():
                     cell_val = str(row[c_idx]).strip()
                     if cell_val and cell_val != "nan":
@@ -756,7 +761,7 @@ if st.session_state.arm_step == 'upload':
         else:
             st.error("Could not locate date header row.")
 
-# UI STEP 2: RESOLVE UNKNOWN PROVIDERS (Simulating the Modal)
+# UI STEP 2: RESOLVE UNKNOWN PROVIDERS
 elif st.session_state.arm_step == 'resolve':
     current_init = st.session_state.arm_missing_queue[0]
     st.warning(f"⚠️ **New Initials Detected:** `{current_init}`")
@@ -788,8 +793,22 @@ elif st.session_state.arm_step == 'resolve':
 
 # UI STEP 3: GENERATE
 elif st.session_state.arm_step == 'generate':
-    st.success("All providers resolved. Generating schedule...")
+    st.success("Schedule processed and ready for export.")
     
+    # Add Provider Manually Expander
+    with st.expander("➕ Add Provider Manually (If Missing)"):
+        with st.form("manual_add_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1: m_name = st.text_input("Name (Last, F)")
+            with col2: m_init = st.text_input("Initials").upper()
+            with col3: m_role = st.selectbox("Role", ["MD", "APP"])
+            if st.form_submit_button("Add to Schedule"):
+                if m_name and m_init:
+                    st.session_state.arm_providers.append({"name": m_name.upper(), "initials": m_init, "role": m_role})
+                    st.rerun()
+                else:
+                    st.error("Name and Initials are required.")
+
     # Initialize output structure
     output_dict = {}
     for p in st.session_state.arm_providers:
@@ -819,11 +838,14 @@ elif st.session_state.arm_step == 'generate':
     
     out_buffer = io.BytesIO()
     df_out.to_excel(out_buffer, index=False, sheet_name="Processed Schedule")
-    st.download_button("Download A.R.M. Schedule", data=out_buffer.getvalue(), file_name="ARM_Processed.xlsx", mime="application/vnd.ms-excel")
     
-    if st.button("Start Over"):
-        st.session_state.arm_step = 'upload'
-        st.rerun()
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.download_button("Export Excel", data=out_buffer.getvalue(), file_name="ARM_Processed.xlsx", mime="application/vnd.ms-excel")
+    with col2:
+        if st.button("Start Over"):
+            st.session_state.arm_step = 'upload'
+            st.rerun()
 
 # ==========================================
 # MODULE: PLANS (Pay-period Leave Allocation)
@@ -879,17 +901,28 @@ if st.session_state.plans_step == 'upload':
 # UI STEP 2: RESOLVE UNKNOWNS
 elif st.session_state.plans_step == 'resolve':
     st.warning(f"⚠️ **Found {len(st.session_state.plans_unknowns)} new provider(s)**.")
-    st.info("Assign their initials below, or type IGNORE to skip their records entirely.")
+    st.info("Assign their initials below, or check 'Ignore' to skip their records entirely.")
     
     with st.form("plans_resolve_form"):
         mappings = {}
         for name in st.session_state.plans_unknowns:
-            mappings[name] = st.text_input(f"Initials for: {name}", placeholder="e.g. ABC or IGNORE")
+            col1, col2, col3 = st.columns([3, 1, 2])
+            with col1:
+                st.markdown(f"**{name}**")
+            with col2:
+                ignore = st.checkbox("Ignore", key=f"ign_{name}")
+            with col3:
+                init = st.text_input("Initials", key=f"init_{name}", disabled=ignore, label_visibility="collapsed", placeholder="Initials")
+            
+            mappings[name] = {"ignore": ignore, "initials": init}
             
         if st.form_submit_button("Save & Process", type="primary"):
-            for name, val in mappings.items():
-                val_clean = val.strip().upper()
-                if val_clean: st.session_state.plans_initials[name] = val_clean
+            for name, data in mappings.items():
+                if data["ignore"]:
+                    st.session_state.plans_initials[name] = "IGNORE"
+                else:
+                    val_clean = data["initials"].strip().upper()
+                    if val_clean: st.session_state.plans_initials[name] = val_clean
             st.session_state.plans_step = 'generate'
             st.rerun()
 
@@ -950,8 +983,11 @@ elif st.session_state.plans_step == 'generate':
     
     out_buffer_plans = io.BytesIO()
     df_out_plans.to_excel(out_buffer_plans, index=False, sheet_name="Leave_Data")
-    st.download_button("Download PLANS Data", data=out_buffer_plans.getvalue(), file_name="PLANS_EXPORT.xlsx", mime="application/vnd.ms-excel")
     
-    if st.button("Start Over", key="plans_reset"):
-        st.session_state.plans_step = 'upload'
-        st.rerun()
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        st.download_button("Export Excel", data=out_buffer_plans.getvalue(), file_name="PLANS_EXPORT.xlsx", mime="application/vnd.ms-excel")
+    with col2:
+        if st.button("Start Over", key="plans_reset"):
+            st.session_state.plans_step = 'upload'
+            st.rerun()
